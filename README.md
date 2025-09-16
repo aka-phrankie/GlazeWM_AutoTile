@@ -1,24 +1,23 @@
-# GlazeWM AutoTile
+A lightweight script that brings smart, automatic tiling to GlazeWM. It runs reliably in the background to create a more fluid and intuitive workflow. **Set it up once and forget about it.**
 
-A lightweight helper script that works with [GlazeWM](https://github.com/glzr-io/glazewm) to automatically adjust tiling direction.
-It connects to GlazeWM’s IPC WebSocket API, listens for window events, and toggles the tiling direction when windows are too small.
+Unlike other tools, this is a pure Python script. No compiling, no unexpected dependencies—just a simple, reliable service.
 
-Unlike other implementations, **no heavy dependencies, no compilation, no binaries** — just Python + one library.
+## Key Features
 
----
+*   **Smart Tiling**: Analyzes the parent container's shape to make splits more predictable and intuitive, especially in complex layouts.
 
-## Features
+*   **Rock-Solid Stability**:
+    *   **Auto-Reconnect**: Automatically reconnects if GlazeWM restarts.
+    *   **Doesn't Crash**: Handles errors gracefully without crashing.
+    *   **Clean Shutdown**: Shuts down cleanly, leaving no processes behind.
 
-* Listens to GlazeWM’s `window_managed` event.
-* Detects tiling size of newly managed windows.
-* If a window’s tiling size is below a threshold (default: `<= 0.5`), automatically runs:
+*   **Lightweight & Unobtrusive**:
+    *   **Pure Python**: Easy to run and modify, with no heavy dependencies.
+    *   **Silent Operation**: Runs invisibly in the background with no console window.
 
-  ```
-  command toggle-tiling-direction
-  ```
-* Runs silently in the background with `pythonw.exe`.
-
----
+*   **Optional Statistics**:
+    *   **Measures Your Efficiency**: Tracks how many manual tiling adjustments the script saves you over time.
+    *   **Local & Optional**: This feature is purely local (no data is sent online) and can be easily disabled with the `--no-stats` flag.
 
 ## How to Use
 
@@ -80,8 +79,11 @@ Unlike other implementations, **no heavy dependencies, no compilation, no binari
        - 'shell-exec E:/VSCode_User_Code/glaze-wm-tools/.venv/Scripts/pythonw.exe
          E:/VSCode_User_Code/glaze-wm-tools/glaze_autotile.pyw'
    ```
+   
+   If you want to disable the statistics function, you need to add a parameter after the command.
+   `- 'shell-exec E:/VSCode_User_Code/glaze-wm-tools/.venv/Scripts/pythonw.exe E:/VSCode_User_Code/glaze-wm-tools/glaze_autotile.pyw --no-stats'`
 
-4. **About `pythonw.exe` and `.pyw` files**
+5. **About `pythonw.exe` and `.pyw` files**
 
    * `pythonw.exe`: A “silent” Python interpreter that runs scripts without opening a console window. Perfect for background tasks.
    * `.pyw` file: Same as `.py`, but associated with `pythonw.exe` by default, so it runs quietly without showing a terminal window.
@@ -98,13 +100,3 @@ Some users may wonder why `pythonw.exe` isn’t bundled here. The reasons are:
 4. **Already included** – Every official Python installation on Windows already provides `pythonw.exe`.
 
 👉 Instead of bundling executables, this project expects you to use a proper Python installation (or a virtual environment via uv), ensuring security and maintainability.
-
----
-
-## FAQ
-
-**Q: Can I change the size threshold (default `0.5`)?**
-A: Yes. Modify the value inside the script to suit your workflow.
-
-**Q: Do I need to compile this script into an `.exe`?**
-A: No. Just use Python directly with `pythonw.exe`. That’s why the tool is so lightweight.
