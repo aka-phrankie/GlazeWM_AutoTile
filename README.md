@@ -2,6 +2,8 @@ A lightweight script that brings smart, automatic tiling to GlazeWM. It runs rel
 
 Unlike other tools, this is a pure Python script. No compiling, no unexpected dependencies—just a simple, reliable service.
 
+If you find it useful, please consider giving the repository a star. 🌟🌟🌟
+
 ## Key Features
 
 *   **Smart Tiling**: Analyzes the parent container's shape to make splits more predictable and intuitive, especially in complex layouts.
