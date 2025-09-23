@@ -36,7 +36,9 @@ If you find it useful, please consider giving the repository a star. 🌟🌟�
 
 1. **Installed [GlazeWM](https://github.com/glzr-io/glazewm)**
 
-   ~~Enable IPC in your `config.yaml`~~ You only need to add these two lines between general: and gaps:
+   ~~Enable IPC in your `config.yaml`~~
+   
+   You only need to add these two lines between general: and gaps:
 
    ```yaml
    ipc:
@@ -102,3 +104,5 @@ Some users may wonder why `pythonw.exe` isn’t bundled here. The reasons are:
 4. **Already included** – Every official Python installation on Windows already provides `pythonw.exe`.
 
 👉 Instead of bundling executables, this project expects you to use a proper Python installation (or a virtual environment via uv), ensuring security and maintainability.
+
+I share [my configuration](https://github.com/aka-phrankie/GlazeWM_AutoTile/blob/main/MyConfig.yaml) in my repository. If needed, you can share my configuration with an AI according to your requirements to have it fulfill your needs.
