@@ -36,14 +36,14 @@ If you find it useful, please consider giving the repository a star. 🌟🌟�
 
 1. **Installed [GlazeWM](https://github.com/glzr-io/glazewm)**
 
-   Enable IPC in your `config.yaml`:
+   ~~Enable IPC in your `config.yaml`~~ You only need to add these two lines between general: and gaps:
 
    ```yaml
    ipc:
      enabled: true
    ```
-
-2. **Python environment available**
+   
+3. **Python environment available**
 
    * Recommended: use [uv](https://github.com/astral-sh/uv) to create a virtual environment instead of using the global Python installation.
    * Inside the virtual environment, install the dependency:
@@ -63,7 +63,7 @@ If you find it useful, please consider giving the repository a star. 🌟🌟�
      uv pip install websockets   # install directly, without writing to pyproject.toml
      ```
 
-3. **Configure GlazeWM startup command**
+4. **Configure GlazeWM startup command**
 
    Add the following to `general.startup_commands` in `config.yaml` (replace with your actual paths):
 
