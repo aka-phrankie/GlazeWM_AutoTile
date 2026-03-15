@@ -1,424 +1,252 @@
-import argparse
 import asyncio
-import functools
 import json
 import logging
 import os
-import sys
-from abc import ABC, abstractmethod
-from datetime import date, datetime
-from logging.handlers import RotatingFileHandler
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Dict, List
 
-# Ensure websockets is installed.
-try:
-    import websockets
-    from websockets.exceptions import ConnectionClosed
-except ImportError:
-    print(
-        "Error: 'websockets' library is not installed. Please use 'pip install websockets' to install it.",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+import websockets
 
-# Create a special block that only runs during type checking.
-if TYPE_CHECKING:
-    from websockets.client import WebSocketClientProtocol  # type: ignore
+# ==============================================================================
+# 配置与模型 (Configuration & Models)
+# ==============================================================================
+DEFAULT_CONFIG = {
+    "core": {
+        "ws_uri": "ws://localhost:6123",
+        "debounce_delay_ms": 200,
+        "log_level": "INFO",
+    }
+}
 
 
-# --- Configuration ---
-class Config:
-    """Centralizes all configuration parameters."""
+@dataclass
+class Window:
+    id: str
+    width: int
+    height: int
+    hasFocus: bool
 
-    WEBSOCKET_URI = "ws://localhost:6123"
-    LOG_FILE = "auto_tiler.log"
-    STATS_FILE = "auto_tiler_stats.json"
-    INTENT_DELAY = 0.2
-    STATS_SAVE_INTERVAL = 60
-    INITIAL_RECONNECT_DELAY = 5
-    MAX_RECONNECT_DELAY = 60
-    RECONNECT_BACKOFF_FACTOR = 2
-    EVENT_FOCUS_CHANGED = "focus_changed"
-    EVENT_WINDOW_MANAGED = "window_managed"
-    EVENT_APP_EXITING = "application_exiting"
-    CMD_SET_TILING_DIRECTION = "command set-tiling-direction"
+    @classmethod
+    def from_dict(cls, data: dict) -> "Window":
+        return cls(
+            id=data.get("id", ""),
+            width=data.get("width", 0),
+            height=data.get("height", 0),
+            hasFocus=data.get("hasFocus", False),
+        )
 
 
-# --- Decorators ---
-def log_and_handle_exceptions(func):
-    """A decorator to automatically log method execution and handle common exceptions."""
+@dataclass
+class Workspace:
+    id: str
+    name: str
+    children_raw: List[Dict[str, Any]]
 
-    @functools.wraps(func)
-    async def wrapper(instance, *args, **kwargs):
-        logger = getattr(instance, "logger", logging)
+    def get_tiling_windows(self) -> List[Window]:
+        """递归获取所有平铺状态的子窗口"""
+        wins = []
+
+        def _traverse(node):
+            if "children" in node:
+                for child in node["children"]:
+                    if child.get("type") == "window":
+                        state = child.get("state", {})
+                        state_type = (
+                            state.get("type") if isinstance(state, dict) else state
+                        )
+                        if state_type == "tiling":
+                            wins.append(Window.from_dict(child))
+                    else:
+                        _traverse(child)
+
+        _traverse({"children": self.children_raw})
+        return wins
+
+
+# ==============================================================================
+# 核心逻辑 (Core Engine)
+# ==============================================================================
+class GlazeWMClient:
+    def __init__(self, uri: str):
+        self.uri = uri
+        self.ws: Any = None
+        self.message_queue = asyncio.Queue()
+        self.logger = logging.getLogger("autotile.client")
+
+    @property
+    def is_connected(self) -> bool:
+        return self.ws is not None and self.ws.state == websockets.protocol.State.OPEN
+
+    async def connect(self):
+        self.ws = await websockets.connect(self.uri)
+        asyncio.create_task(self._receive_loop())
+
+    async def _receive_loop(self):
+        if not self.ws:
+            return
         try:
-            return await func(instance, *args, **kwargs)
-        except ConnectionClosed:
-            logger.warning(f"Connection closed during '{func.__name__}'.")
-            raise
+            async for msg in self.ws:
+                await self.message_queue.put(msg)
+        except Exception:
+            pass
+
+    async def send_command(self, cmd: str) -> None:
+        if self.is_connected:
+            await self.ws.send(f"command {cmd}")
+
+    async def query(self, query_str: str) -> dict:
+        if not self.is_connected:
+            return {}
+        await self.ws.send(query_str)
+        while True:
+            try:
+                msg = await asyncio.wait_for(self.message_queue.get(), timeout=1.0)
+                event_data = json.loads(msg)
+                if event_data.get("messageType") == "client_response":
+                    return event_data
+            except asyncio.TimeoutError:
+                # If a timeout occurs, continue the loop to try getting a message again.
+                # This prevents immediate exit on query timeout.
+                continue
+            except Exception:
+                # For any other exception (e.g., JSON decoding error), return an empty dict.
+                return {}
+
+
+class AutoTilerApp:
+    def __init__(self, config: dict):
+        self.config = config
+        self.client = GlazeWMClient(config["core"]["ws_uri"])
+        self.workspace_states: Dict[str, set] = {}
+
+        # 日志配置: 屏蔽 websockets 心跳噪音，同时输出到控制台和文件
+        log_level = getattr(logging, config["core"]["log_level"].upper(), logging.INFO)
+        logging.basicConfig(
+            level=log_level,
+            format="%(asctime)s %(levelname)-8s %(message)s",
+            handlers=[
+                logging.StreamHandler(),
+                logging.FileHandler("autotile_standalone.log", encoding="utf-8"),
+            ],
+        )
+        logging.getLogger("websockets").setLevel(logging.INFO)
+        self.log = logging.getLogger("autotile")
+
+        # 统计数据初始化
+        self.stats: Dict[str, Any] = {"total_guidance": 0}
+        if os.path.exists("auto_tiler_stats.json"):
+            try:
+                with open("auto_tiler_stats.json", "r") as f:
+                    self.stats.update(json.load(f))
+            except Exception:
+                pass
+
+    def save_stats(self):
+        """持久化统计数据到文件"""
+        try:
+            with open("auto_tiler_stats.json", "w") as f:
+                json.dump(self.stats, f)
         except Exception as e:
-            logger.error(
-                f"An unexpected error occurred in {func.__name__}: {e}", exc_info=True
+            self.log.debug(f"Failed to save stats: {e}")
+
+    async def run(self):
+        self.log.info("===== Tiny GlazeWM Autotile Engine Started =====")
+        try:
+            await self.client.connect()
+            for ev in [
+                "window_managed",
+                "focus_changed",
+                "workspace_activated",
+                "focused_container_moved",
+            ]:
+                await self.client.ws.send(f"sub -e {ev}")
+            self.log.info("🎯 全域事件捕获网络已就绪 (Watching events...)")
+
+            debounce = self.config["core"]["debounce_delay_ms"] / 1000.0
+            while True:
+                try:
+                    msg = await asyncio.wait_for(
+                        self.client.message_queue.get(), timeout=1.0
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+                event_data = json.loads(msg)
+
+                if event_data.get("messageType") in (
+                    "event_subscription",
+                    "event_subscription_message",
+                ):
+                    event_type = event_data.get("data", {}).get("eventType", "unknown")
+                    await asyncio.sleep(debounce)
+                    # 清空积压消息
+                    while not self.client.message_queue.empty():
+                        self.client.message_queue.get_nowait()
+                    await self._apply_guidance(event_type)
+        except Exception as e:
+            if not isinstance(e, asyncio.TimeoutError):
+                self.log.error(f"Runtime Error: {e}")
+        finally:
+            self.save_stats()  # 退出前强制保存一次
+            if self.client.ws:
+                await self.client.ws.close()
+
+    async def _apply_guidance(self, event_type: str):
+        res = await self.client.query("query workspaces")
+        workspaces = res.get("data", {}).get("workspaces", [])
+        active_ws_data = next((w for w in workspaces if w.get("hasFocus")), None)
+        if not active_ws_data:
+            return
+
+        ws = Workspace(
+            active_ws_data["id"],
+            active_ws_data["name"],
+            active_ws_data.get("children", []),
+        )
+        wins = ws.get_tiling_windows()
+        current_ids = {w.id for w in wins}
+
+        # 判断是否需要更新 (由于只针对焦点窗口引导，任何触发事件都会处理焦点窗口)
+        focused_win = next((w for w in wins if w.hasFocus), None)
+        if focused_win:
+            ratio = (
+                focused_win.width / focused_win.height
+                if focused_win.height > 0
+                else 1.0
             )
+            direction = "horizontal" if ratio > 1.0 else "vertical"
+            self.log.info(f"⚖️ [Guidance] {ws.name} | Ratio: {ratio:.2f} -> {direction}")
+            await self.client.send_command(f"set-tiling-direction {direction}")
 
-    return wrapper
+            # 更新统计并保存 (兼容旧版 TotalSwitches 和 DailySwitches 字段)
+            today = datetime.now().strftime("%Y-%m-%d")
+
+            # 1. 更新总数
+            self.stats["TotalSwitches"] = int(self.stats.get("TotalSwitches", 0)) + 1
+            self.stats["total_guidance"] = int(self.stats.get("total_guidance", 0)) + 1
+
+            # 2. 更新每日统计
+            daily = self.stats.get("DailySwitches", {})
+            if not isinstance(daily, dict):
+                daily = {}
+            daily[today] = int(daily.get(today, 0)) + 1
+            self.stats["DailySwitches"] = daily
+
+            # 每 10 次保存一次，减少 IO
+            if self.stats["total_guidance"] % 10 == 0:
+                self.save_stats()
+
+        self.workspace_states[ws.id] = current_ids
 
 
-# --- Strategy Pattern ---
-class TilingStrategy(ABC):
-    """Abstract base class for tiling strategies, defining the decision-making interface."""
-
-    @abstractmethod
-    def determine_direction(self, container: dict | None) -> str | None:
+def main():
+    app = AutoTilerApp(DEFAULT_CONFIG)
+    try:
+        asyncio.run(app.run())
+    except KeyboardInterrupt:
         pass
 
 
-class ParentPriorityShapeStrategy(TilingStrategy):
-    """A concrete strategy implementation: Prioritizes the parent container's shape to determine the tiling direction."""
-
-    def __init__(self, logger: logging.Logger):
-        self.logger = logger
-
-    def determine_direction(self, container: dict | None) -> str | None:
-        if not container:
-            return None
-        parent = container.get("parent")
-        decision_container = (
-            parent if parent and parent.get("layout") == "tiling" else container
-        )
-        if decision_container is parent:
-            self.logger.debug("Decision based on [Parent Container]'s shape.")
-        else:
-            self.logger.debug(
-                "Decision based on [Current Window]'s shape (no tiling parent)."
-            )
-        width, height = (
-            decision_container.get("width"),
-            decision_container.get("height"),
-        )
-        if width is not None and height is not None:
-            return "vertical" if height > width else "horizontal"
-        return None
-
-
-# --- Core Logic & Observer Pattern ---
-class GlazeWMClient:
-    """The core business logic class, acting as the "Publisher"."""
-
-    def __init__(
-        self, config: Config, strategy: TilingStrategy, logger: logging.Logger
-    ):
-        self.config, self.strategy, self.logger = config, strategy, logger
-        self._websocket: "WebSocketClientProtocol | None" = None
-        self._current_direction: str | None = None
-        self._set_direction_task: asyncio.Task | None = None
-        self._subscribers = {config.EVENT_WINDOW_MANAGED: []}
-
-    def subscribe(self, event_type: str, callback):
-        if event_type in self._subscribers:
-            subscriber_name = getattr(callback, "__self__", callback).__class__.__name__
-            self.logger.info(f"'{subscriber_name}' subscribed to '{event_type}'.")
-            self._subscribers[event_type].append(callback)
-
-    async def _publish(self, event_type: str, data: dict):
-        if event_type in self._subscribers:
-            self.logger.debug(
-                f"Publishing event '{event_type}' to {len(self._subscribers[event_type])} subscribers."
-            )
-            await asyncio.gather(
-                *(callback(data) for callback in self._subscribers[event_type])
-            )
-
-    async def _set_direction_after_delay(self, direction: str):
-        await asyncio.sleep(self.config.INTENT_DELAY)
-        if self._websocket and direction != self._current_direction:
-            try:
-                await self._websocket.send(
-                    f"{self.config.CMD_SET_TILING_DIRECTION} {direction}"
-                )
-                self._current_direction = direction
-                self.logger.debug(f"Tiling direction preset to '{direction}'.")
-            except ConnectionClosed:
-                self.logger.warning(
-                    f"Could not set tiling direction to '{direction}' because connection was closed."
-                )
-            except Exception as e:
-                self.logger.error(
-                    f"An unexpected error occurred while setting tiling direction: {e}"
-                )
-
-    @log_and_handle_exceptions
-    async def _on_focus_changed(self, data: dict):
-        if self._set_direction_task and not self._set_direction_task.done():
-            self._set_direction_task.cancel()
-        container = data.get("data", {}).get("focusedContainer")
-        if new_direction := self.strategy.determine_direction(container):
-            self._set_direction_task = asyncio.create_task(
-                self._set_direction_after_delay(new_direction)
-            )
-
-    @log_and_handle_exceptions
-    async def _on_window_managed(self, data: dict):
-        await self._publish(self.config.EVENT_WINDOW_MANAGED, data)
-
-    async def run(self):
-        delay = self.config.INITIAL_RECONNECT_DELAY
-        events = [
-            self.config.EVENT_FOCUS_CHANGED,
-            self.config.EVENT_WINDOW_MANAGED,
-            self.config.EVENT_APP_EXITING,
-        ]
-        while True:
-            try:
-                self.logger.info(
-                    f"Attempting to connect to GlazeWM: {self.config.WEBSOCKET_URI}..."
-                )
-                async with websockets.connect(self.config.WEBSOCKET_URI) as websocket:
-                    self.logger.info("Successfully connected to GlazeWM IPC.")
-                    delay, self._websocket, self._current_direction = (
-                        self.config.INITIAL_RECONNECT_DELAY,
-                        websocket,
-                        None,
-                    )
-                    for event in events:
-                        await websocket.send(f"sub -e {event}")
-                    self.logger.info(f"Subscribed to events: {', '.join(events)}")
-                    async for message in websocket:
-                        response = json.loads(message)
-                        event_type = response.get("data", {}).get("eventType")
-                        if event_type == self.config.EVENT_FOCUS_CHANGED:
-                            await self._on_focus_changed(response)
-                        elif event_type == self.config.EVENT_WINDOW_MANAGED:
-                            await self._on_window_managed(response)
-                        elif event_type == self.config.EVENT_APP_EXITING:
-                            self.logger.info(
-                                "GlazeWM is exiting. Shutting down the script."
-                            )
-                            return
-            except (ConnectionRefusedError, OSError) as e:
-                self.logger.error(f"Connection failed: {e}. Retrying in {delay}s...")
-            except ConnectionClosed:
-                self.logger.warning(f"Connection lost. Retrying in {delay}s...")
-            except Exception as e:
-                self.logger.error(
-                    f"An unexpected error: {e}. Retrying in {delay}s...", exc_info=True
-                )
-            await asyncio.sleep(delay)
-            delay = min(
-                self.config.MAX_RECONNECT_DELAY,
-                delay * self.config.RECONNECT_BACKOFF_FACTOR,
-            )
-
-
-# --- Statistics Module (Subscriber) ---
-class StatsManager:
-    """Manages, loads, and saves script execution statistics in a non-blocking manner."""
-
-    KEY_ORDER = [
-        "TotalSwitches",
-        "AuthorMessage",
-        "FirstInstallTime",
-        "Tip",
-        "DailySwitches",
-    ]
-
-    def __init__(self, filepath: str, logger: logging.Logger):
-        self.filepath, self.logger, self._lock = filepath, logger, asyncio.Lock()
-        self.stats = self._load_stats_blocking()
-
-        needs_initial_save = False
-        if "FirstInstallTime" not in self.stats:
-            self.stats["FirstInstallTime"] = datetime.now().isoformat(
-                sep=" ", timespec="seconds"
-            )
-            needs_initial_save = True
-
-        if "AuthorMessage" not in self.stats:
-            self.stats["AuthorMessage"] = (
-                "Thank you for using this script. To support its development and the core GlazeWM project, "
-                "please consider starring the repositories on GitHub: "
-                "[Script] https://github.com/aka-phrankie/GlazeWM_AutoTile and "
-                "[Official] https://github.com/glzr-io/glazewm"
-            )
-            needs_initial_save = True
-        if "Tip" not in self.stats:
-            self.stats["Tip"] = (
-                "The 'DailySwitches' data can be used with data analysis tools or AI to visualize "
-                "your window management activity."
-            )
-            needs_initial_save = True
-
-        if needs_initial_save:
-            self.logger.info("First run detected. Initializing stats file.")
-            self._save_stats_blocking()
-
-        self._reconcile_totals()
-
-    def _reconcile_totals(self):
-        """Reconciles and corrects totals on startup, safely handling and converting numeric strings."""
-        try:
-            if "DailySwitches" in self.stats and self.stats["DailySwitches"]:
-                calculated_total = 0
-                for day, value in self.stats["DailySwitches"].items():
-                    try:
-                        numeric_value = int(value)
-                        if self.stats["DailySwitches"][day] is not numeric_value:
-                            self.stats["DailySwitches"][day] = numeric_value
-                        calculated_total += numeric_value
-                    except (ValueError, TypeError):
-                        self.logger.warning(
-                            f"Skipping non-numeric value '{value}' for day '{day}'."
-                        )
-
-                recorded_total = self.stats.get("TotalSwitches", 0)
-                if calculated_total != recorded_total:
-                    self.logger.warning(
-                        f"Total switches mismatch! Recorded: {recorded_total}, Calculated: {calculated_total}. Correcting."
-                    )
-                    self.stats["TotalSwitches"] = calculated_total
-        except Exception as e:
-            self.logger.error(f"Error during stats reconciliation: {e}", exc_info=True)
-
-    async def on_window_managed(self, event_data: dict):
-        self._increment()
-
-    def _increment(self):
-        today = date.today().isoformat()
-        self.stats["TotalSwitches"] = self.stats.get("TotalSwitches", 0) + 1
-        daily_stats = self.stats.setdefault("DailySwitches", {})
-        daily_stats[today] = daily_stats.get(today, 0) + 1
-
-        # Log the window management event and the updated count.
-        self.logger.info(
-            f"GlazeWM managed a new window. Incrementing stats. Today's count: {daily_stats[today]}"
-        )
-
-    async def save(self):
-        await asyncio.to_thread(self._save_stats_blocking)
-
-    async def run_periodic_save(self, interval: int):
-        while True:
-            await asyncio.sleep(interval)
-            await self.save()
-
-    def _load_stats_blocking(self) -> dict:
-        """Loads statistics from the file."""
-        if not os.path.exists(self.filepath):
-            self.logger.info("Stats file not found. Starting fresh.")
-            return {"TotalSwitches": 0, "DailySwitches": {}}
-        try:
-            with open(self.filepath, "r", encoding="utf-8") as f:
-                stats_data = json.load(f)
-                total = stats_data.get("TotalSwitches", 0)
-                self.logger.info(f"Stats loaded. Total switches: {total}")
-                return stats_data
-        except (json.JSONDecodeError, IOError, TypeError) as e:
-            self.logger.error(
-                f"Could not load or parse stats file: {e}. Starting fresh."
-            )
-            return {"TotalSwitches": 0, "DailySwitches": {}}
-
-    def _save_stats_blocking(self):
-        """
-        The actual blocking file write operation.
-        Before writing, it sorts the dictionary keys according to KEY_ORDER.
-        """
-        ordered_stats = {
-            key: self.stats[key] for key in self.KEY_ORDER if key in self.stats
-        }
-
-        for key, value in self.stats.items():
-            if key not in ordered_stats:
-                ordered_stats[key] = value
-
-        try:
-            with open(self.filepath, "w", encoding="utf-8") as f:
-                json.dump(ordered_stats, f, indent=2)
-            self.logger.info("Stats successfully saved to disk.")
-        except IOError as e:
-            self.logger.error(f"Could not save stats: {e}")
-
-
-# --- Program Entry Point & Assembly ---
-def setup_logging(log_file: str, script_dir: str) -> logging.Logger:
-    log_path = os.path.join(script_dir, log_file)
-    log_formatter = logging.Formatter(
-        "%(asctime)s - %(levelname)s - [%(funcName)s] - %(message)s"
-    )
-    handler = RotatingFileHandler(
-        log_path, maxBytes=1 * 1024 * 1024, backupCount=5, encoding="utf-8"
-    )
-    handler.setFormatter(log_formatter)
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    if logger.hasHandlers():
-        logger.handlers.clear()
-    logger.addHandler(handler)
-    if sys.executable.endswith("python.exe"):
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(log_formatter)
-        logger.addHandler(console_handler)
-    return logger
-
-
-async def main():
-    parser = argparse.ArgumentParser(
-        description="GlazeWM Auto Tiler with optional stats."
-    )
-    parser.add_argument(
-        "--no-stats",
-        action="store_true",
-        help="Disable the statistics counting feature.",
-    )
-    args = parser.parse_args()
-    script_dir = (
-        os.path.dirname(sys.executable)
-        if getattr(sys, "frozen", False)
-        else os.path.dirname(os.path.abspath(__file__))
-    )
-    config = Config()
-    logger = setup_logging(config.LOG_FILE, script_dir)
-
-    logger.info("Starting GlazeWM Auto Tiler script...")
-
-    tiling_strategy = ParentPriorityShapeStrategy(logger)
-    client = GlazeWMClient(config, tiling_strategy, logger)
-    stats_manager = None
-    if not args.no_stats:
-        stats_file_path = os.path.join(script_dir, config.STATS_FILE)
-        stats_manager = StatsManager(stats_file_path, logger)
-        if install_time := stats_manager.stats.get("FirstInstallTime"):
-            logger.info(f"Script first installed on: {install_time}")
-        client.subscribe(config.EVENT_WINDOW_MANAGED, stats_manager.on_window_managed)
-        logger.info("Statistics feature is ENABLED.")
-    else:
-        logger.info("Statistics feature is DISABLED.")
-
-    tasks = {asyncio.create_task(client.run())}
-    if stats_manager:
-        tasks.add(
-            asyncio.create_task(
-                stats_manager.run_periodic_save(config.STATS_SAVE_INTERVAL)
-            )
-        )
-    try:
-        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in done:
-            if exc := task.exception():
-                logger.error("A core task exited with an exception:", exc_info=exc)
-    finally:
-        logger.info("Initiating shutdown sequence...")
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        if stats_manager:
-            logger.info("Executing final stats save...")
-            await stats_manager.save()
-        logger.info("Script has stopped.")
-
-
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        logging.getLogger().info("Script interrupted by user or system. Shutting down.")
+    main()
