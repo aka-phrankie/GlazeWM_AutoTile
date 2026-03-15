@@ -24,10 +24,6 @@ If you find it useful, please consider giving the repository a star. 🌟🌟�
 ## How to Use
 
 1. Copy the Python script (`.py`) to your local machine.
-
-   * Either rename the extension to `.pyw`,
-   * Or download the `.pyw` file directly from this repository.
-
 2. Follow the setup steps below.
 
 ---
@@ -72,7 +68,7 @@ If you find it useful, please consider giving the repository a star. 🌟🌟�
    ```yaml
    general:
      startup_commands:
-       - 'shell-exec {absolute path to pythonw.exe} {path to your .pyw file}'
+       - 'shell-exec {absolute path to pythonw.exe} {path to your .py file}'
    ```
 
    Example:
@@ -81,16 +77,15 @@ If you find it useful, please consider giving the repository a star. 🌟🌟�
    general:
      startup_commands:
        - 'shell-exec E:/VSCode_User_Code/glaze-wm-tools/.venv/Scripts/pythonw.exe
-         E:/VSCode_User_Code/glaze-wm-tools/glaze_autotile.pyw'
+         E:/VSCode_User_Code/glaze-wm-tools/glaze_autotile.py'
    ```
    
    If you want to disable the statistics function, you need to add a parameter after the command.
-   `- 'shell-exec E:/VSCode_User_Code/glaze-wm-tools/.venv/Scripts/pythonw.exe E:/VSCode_User_Code/glaze-wm-tools/glaze_autotile.pyw --no-stats'`
+   `- 'shell-exec E:/VSCode_User_Code/glaze-wm-tools/.venv/Scripts/pythonw.exe E:/VSCode_User_Code/glaze-wm-tools/glaze_autotile.py --no-stats'`
 
-5. **About `pythonw.exe` and `.pyw` files**
+5. **About `pythonw.exe` 
 
    * `pythonw.exe`: A “silent” Python interpreter that runs scripts without opening a console window. Perfect for background tasks.
-   * `.pyw` file: Same as `.py`, but associated with `pythonw.exe` by default, so it runs quietly without showing a terminal window.
 
 ---
 
