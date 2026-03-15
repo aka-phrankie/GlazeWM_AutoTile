@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List
@@ -113,14 +114,15 @@ class GlazeWMClient:
 
 
 class AutoTilerApp:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, enable_stats: bool = True):
         self.config = config
+        self.enable_stats = enable_stats
         self.client = GlazeWMClient(config["core"]["ws_uri"])
         self.workspace_states: Dict[str, set] = {}
 
         # 统计数据初始化
         self.stats: Dict[str, Any] = {"total_guidance": 0}
-        if os.path.exists("auto_tiler_stats.json"):
+        if self.enable_stats and os.path.exists("auto_tiler_stats.json"):
             try:
                 with open("auto_tiler_stats.json", "r") as f:
                     self.stats.update(json.load(f))
@@ -129,6 +131,8 @@ class AutoTilerApp:
 
     def save_stats(self):
         """持久化统计数据到文件"""
+        if not self.enable_stats:
+            return
         try:
             with open("auto_tiler_stats.json", "w") as f:
                 json.dump(self.stats, f)
@@ -201,6 +205,9 @@ class AutoTilerApp:
             direction = "horizontal" if ratio > 1.0 else "vertical"
             await self.client.send_command(f"set-tiling-direction {direction}")
 
+            if not self.enable_stats:
+                return
+
             # 更新统计并保存 (兼容旧版 TotalSwitches 和 DailySwitches 字段)
             today = datetime.now().strftime("%Y-%m-%d")
 
@@ -223,7 +230,8 @@ class AutoTilerApp:
 
 
 def main():
-    app = AutoTilerApp(DEFAULT_CONFIG)
+    enable_stats = "--no-stats" not in sys.argv
+    app = AutoTilerApp(DEFAULT_CONFIG, enable_stats=enable_stats)
     try:
         asyncio.run(app.run())
     except KeyboardInterrupt:
