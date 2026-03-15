@@ -1,6 +1,5 @@
 import asyncio
 import json
-import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -72,7 +71,6 @@ class GlazeWMClient:
         self.uri = uri
         self.ws: Any = None
         self.message_queue = asyncio.Queue()
-        self.logger = logging.getLogger("autotile.client")
 
     @property
     def is_connected(self) -> bool:
@@ -120,19 +118,6 @@ class AutoTilerApp:
         self.client = GlazeWMClient(config["core"]["ws_uri"])
         self.workspace_states: Dict[str, set] = {}
 
-        # 日志配置: 屏蔽 websockets 心跳噪音，同时输出到控制台和文件
-        log_level = getattr(logging, config["core"]["log_level"].upper(), logging.INFO)
-        logging.basicConfig(
-            level=log_level,
-            format="%(asctime)s %(levelname)-8s %(message)s",
-            handlers=[
-                logging.StreamHandler(),
-                logging.FileHandler("autotile_standalone.log", encoding="utf-8"),
-            ],
-        )
-        logging.getLogger("websockets").setLevel(logging.INFO)
-        self.log = logging.getLogger("autotile")
-
         # 统计数据初始化
         self.stats: Dict[str, Any] = {"total_guidance": 0}
         if os.path.exists("auto_tiler_stats.json"):
@@ -147,11 +132,10 @@ class AutoTilerApp:
         try:
             with open("auto_tiler_stats.json", "w") as f:
                 json.dump(self.stats, f)
-        except Exception as e:
-            self.log.debug(f"Failed to save stats: {e}")
+        except Exception:
+            pass
 
     async def run(self):
-        self.log.info("===== Tiny GlazeWM Autotile Engine Started =====")
         try:
             await self.client.connect()
             for ev in [
@@ -161,7 +145,6 @@ class AutoTilerApp:
                 "focused_container_moved",
             ]:
                 await self.client.ws.send(f"sub -e {ev}")
-            self.log.info("🎯 全域事件捕获网络已就绪 (Watching events...)")
 
             debounce = self.config["core"]["debounce_delay_ms"] / 1000.0
             while True:
@@ -186,7 +169,7 @@ class AutoTilerApp:
                     await self._apply_guidance(event_type)
         except Exception as e:
             if not isinstance(e, asyncio.TimeoutError):
-                self.log.error(f"Runtime Error: {e}")
+                pass
         finally:
             self.save_stats()  # 退出前强制保存一次
             if self.client.ws:
@@ -216,7 +199,6 @@ class AutoTilerApp:
                 else 1.0
             )
             direction = "horizontal" if ratio > 1.0 else "vertical"
-            self.log.info(f"⚖️ [Guidance] {ws.name} | Ratio: {ratio:.2f} -> {direction}")
             await self.client.send_command(f"set-tiling-direction {direction}")
 
             # 更新统计并保存 (兼容旧版 TotalSwitches 和 DailySwitches 字段)
