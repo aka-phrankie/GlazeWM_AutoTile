@@ -4,8 +4,7 @@
 
 general:
   startup_commands:
-    - 'shell-exec E:/VSCode_User_Code/glaze-wm-tools/.venv/Scripts/pythonw.exe
-      E:/VSCode_User_Code/glaze-wm-tools/glaze_autotile.pyw'
+    - 'shell-exec E:/VSCode_User_Code/glaze-wm-tools/.venv/Scripts/pythonw.exe E:/VSCode_User_Code/glaze-wm-tools/glaze_autotile.py'
   config_reload_commands: []
 
   # Whether to automatically focus the window under the cursor.
